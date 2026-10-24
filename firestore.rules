@@ -1,0 +1,65 @@
+rules_version = '2';
+service cloud.firestore { match /databases/{db}/documents {
+  function signed() { return request.auth != null; }
+  function me() { return get(/databases/$(db)/documents/users/$(request.auth.uid)).data; }
+  function admin() { return signed() && me().role == 'admin'; }
+  function hr() { return signed() && me().role == 'hr'; }
+  function staff() { return admin() || hr(); }
+  function mine() { return signed() && resource.data.empId == request.auth.uid; }
+  function only(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+
+  match /meta/{id} { allow read: if true;
+    allow create: if admin() && !exists(/databases/$(db)/documents/meta/init); }
+
+  match /users/{uid} {
+    allow read: if signed() && (request.auth.uid == uid || staff());
+    allow create: if (request.auth.uid == uid && request.resource.data.role == 'admin'
+                      && !exists(/databases/$(db)/documents/meta/init))
+                  || admin() || (hr() && request.resource.data.role == 'employee');
+    allow update: if admin() || (request.auth.uid == uid && only(['mustChangePassword']));
+  }
+
+  match /settings/{id} { allow read: if signed(); allow write: if admin(); }
+  match /{col}/{id} {
+    allow read: if signed() && col in ['departments','designations','leaveTypes','holidays','announcements'];
+    allow write: if admin() && col in ['departments','designations','leaveTypes','holidays'];
+    allow create: if staff() && col == 'announcements';
+  }
+
+  match /employees/{id} {
+    allow read: if staff() || (signed() && request.auth.uid == id);
+    allow create, update: if hr() || (signed() && request.auth.uid == id && only(['phone','address']));
+  }
+
+  match /attendance/{id} {
+    allow read: if staff() || (signed() && (resource == null || resource.data.empId == request.auth.uid));
+    allow create: if hr() || (signed() && request.resource.data.empId == request.auth.uid
+                              && request.resource.data.checkIn == request.time);
+    allow update: if hr() || (mine() && only(['checkOut']) && !('checkOut' in resource.data)
+                              && request.resource.data.checkOut == request.time);
+  }
+  match /attendanceFixes/{id} {
+    allow read: if staff() || mine();
+    allow create: if signed() && request.resource.data.empId == request.auth.uid && request.resource.data.status == 'pending';
+    allow update: if hr();
+  }
+  match /leaves/{id} {
+    allow read: if staff() || mine();
+    allow create: if signed() && request.resource.data.empId == request.auth.uid && request.resource.data.status == 'pending';
+    allow update: if hr() || (mine() && resource.data.status == 'pending' && request.resource.data.status == 'cancelled');
+  }
+  match /payrollRuns/{id} {
+    allow read: if staff();
+    allow create: if hr() && request.resource.data.status == 'draft';
+    allow update: if resource.data.status == 'draft' && ((hr() && request.resource.data.status == 'draft') || admin());
+  }
+  match /payslips/{id} { allow read: if staff() || mine(); allow create: if admin(); }
+  match /notifications/{id} {
+    allow read, update: if signed() && resource.data.toUid == request.auth.uid;
+    allow create: if signed();
+  }
+  match /aiLogs/{id} { allow read: if admin();
+    allow create: if signed() && request.resource.data.uid == request.auth.uid; }
+  match /auditLogs/{id} { allow read: if admin();
+    allow create: if signed() && request.resource.data.actor == request.auth.uid; }
+}}
